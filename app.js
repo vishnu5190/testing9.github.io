@@ -1,11 +1,19 @@
 require("dotenv").config();
 const express = require("express");
+let multer = require('multer'),
+        bodyParser = require('body-parser'),
+        path = require('path');
+
 const ejs = require("ejs");
 const mongoose = require("mongoose");
 const session = require("express-session");
+let fs = require('fs');
+let dir = './uploads';
 const Razorpay = require('razorpay')
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require("mongoose-findorcreate");
 const nodemailer = require("nodemailer");
 // const PaymentDetail =  require('./models/payment-detail')
 
@@ -14,6 +22,9 @@ const { nanoid } = require("nanoid");
 const app = express();
 
 app.use(express.static("public"));
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static('uploads'));
+app.use(bodyParser.json());
 app.set("view engine" , "ejs");
 app.use(express.urlencoded({
     extended: true
@@ -41,6 +52,8 @@ const userSchema = new mongoose.Schema({
     pincode: String,
     username: String,
     password: String,
+    googleId: String,
+    detail: [{type: String}],
     title: [{type: String , require: true}],
     posts: [{type: String , require: true}]
     
@@ -48,8 +61,37 @@ const userSchema = new mongoose.Schema({
 });
 
 userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
 
 const User = new mongoose.model("User" , userSchema);
+
+passport.use(User.createStrategy());
+
+passport.serializeUser(function(user, done) {
+    done(null, user.id);
+  });
+  
+  passport.deserializeUser(function(id, done) {
+    User.findById(id, function(err, user) {
+      done(err, user);
+    });
+  });
+
+  ////////////
+
+  passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3006/auth/google/callback"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+      console.log(profile);
+    User.findOrCreate({ googleId: profile.id  , fname: profile.name.givenName , lname: profile.name.familyName}, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
+
 
 ///////////////
 
@@ -81,7 +123,145 @@ const paymentDetailsSchema = new mongoose.Schema({
 	}
 });
 
-const PaymentDetail = new mongoose.model('PaymentDetail', paymentDetailsSchema)
+const PaymentDetail = new mongoose.model('PaymentDetail', paymentDetailsSchema);
+
+
+//////////////////////////
+const detailSchema = new mongoose.Schema( {
+	unique_id:Number,
+  name: String,
+  email: String,
+	location: String,
+    placeNearby: String,
+    TypeOfDonation: String,
+	image1:String,
+	image2:String,
+	image3:String,
+	added_date:{
+		type: Date,
+		default: Date.now
+	}
+});
+
+const Detail = new mongoose.model('Detail', detailSchema);
+
+
+////////////////////////////////////
+let upload = multer({
+    storage: multer.diskStorage({
+  
+      destination: (req, file, callback) => {
+        if (!fs.existsSync(dir)) {
+          fs.mkdirSync(dir);
+        }
+        callback(null, './uploads');
+      },
+      filename: (req, file, callback) => { callback(null, file.fieldname + '-' + Date.now() + path.extname(file.originalname)); }
+  
+    }),
+
+    fileFilter: (req, file, callback) => {
+        let ext = path.extname(file.originalname)
+        if (ext !== '.png' && ext !== '.jpg' && ext !== '.gif' && ext !== '.jpeg') {
+          return callback(/*res.end('Only images are allowed')*/ null, false)
+        }
+        callback(null, true)
+      }
+    });
+
+//////////////////////////////////////////
+app.get('/give', (req, res) => {
+     
+      if(req.isAuthenticated()){
+        
+        Detail.find({}, (err, data) => {
+          if (err) {
+            console.log(err);
+          } else {
+            res.render('give', { data: data });
+          }
+        })
+        
+      } else {
+         res.redirect("/sign");
+      }
+    
+    
+  
+  });
+
+  app.post('/give', upload.any(), (req, res) => {
+   
+     let i = 1
+
+    if (!req.body && !req.files) {
+      res.json({ success: false });
+    } else {
+      let c;
+      // const submittedpic = req.body.upl;
+      const submittedpic = i ;
+      User.findById(req.user.id , function(err , foundUser){
+        if(err){
+          console.log(err);
+        } else {
+          if(foundUser){
+            foundUser.detail.push(submittedpic)
+            foundUser.save()
+
+            Detail.findOne({}, (err, data) => {
+  
+              if (data) {
+                c = data.unique_id + 1;
+              } else {
+                c = 1;
+              }
+        
+              let detail = new Detail({
+        
+                unique_id: c,
+                name: foundUser.fname,
+                // email: req.body.email,
+                location: req.body.location,
+                placeNearby: req.body.placeNearby,
+                TypeOfDonation: req.body.typeofdonation,
+                image1: req.files[0] && req.files[0].filename ? req.files[0].filename : '',
+                image2: req.files[1] && req.files[1].filename ? req.files[1].filename : '',
+              });
+        
+              detail.save((err, Person) => {
+                if (err)
+                  console.log(err);
+                else
+                  res.redirect('/give');
+        
+              });
+        
+            }).sort({ _id: -1 }).limit(1);
+          }
+        }   
+      })
+     
+  
+    }
+  });
+
+  app.post('/delete', (req, res) => {
+
+    Detail.findByIdAndRemove(req.body.prodId, (err, data) => {
+  
+      // console.log(data);
+      // remove file from upload folder which is deleted
+      fs.unlinkSync(`./uploads/${data.image1}`);
+      fs.unlinkSync(`./uploads/${data.image2}`);
+  
+    })
+    res.redirect('/give');
+  });
+  
+
+
+
+
 
 // Create an instance of Razorpay
 let razorPayInstance = new Razorpay({
@@ -103,6 +283,21 @@ passport.serializeUser(function(user, done) {
     });
   });
 
+
+//////////
+app.get('/auth/google',
+  passport.authenticate('google', { scope: ['profile'] }));
+
+  app.get('/auth/google/callback', 
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  function(req, res) {
+    // Successful authentication, redirect home.
+    res.redirect('/');
+  });
+
+//   app.get("/successfull" , function(req, res){
+//     res.render("successfull");
+// });
 
 
 
@@ -166,7 +361,7 @@ var transport = nodemailer.createTransport({
     console.log("Check");
     transport.sendMail({
       from: process.env.USER_ID,
-      to: "vedanthvbaliga@gmail.com " ,
+      to: "vishnukumar0050@gmail.com " ,
       subject: "new user signup",
       html: `<div>
             <h1>good morning Admin </h1>
@@ -380,10 +575,23 @@ app.post('/verify', async function(req, res, next) {
 });
 
 
+app.get("/reward" , function(req, res){
+  if(req.isAuthenticated()){
+    User.findById(req.user.id , function(err , foundUser){
+      if(err){
+        console.log(err);
+      } else {
+        if(foundUser){
+           res.render("reward" , {admin : foundUser});
+        }
+        }
+        });
 
-
-
-
+  }else{
+      res.redirect("/sign");
+  }
+  
+});
 
 
 
