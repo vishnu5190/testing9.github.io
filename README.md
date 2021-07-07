@@ -21,7 +21,7 @@ npm install
 ```
 
 ##  Code is Running on
-   [http://localhost:3000/](https://pip.pypa.io/en/stable/)
+   [http://localhost:3006/](https://pip.pypa.io/en/stable/)
     
 
 ###  Thanks☺️
